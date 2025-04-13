@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use serde::Deserialize;
 use docopt::{Docopt, Error};
 
 // https://stackoverflow.com/a/27590832/1558022
@@ -47,6 +48,7 @@ Commands:
 ";
 
 #[derive(Debug, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Args {
     pub cmd_url: bool,
     pub cmd_title: bool,
@@ -74,21 +76,15 @@ pub fn parse_args(name: &str) -> Args {
     // 0 is the default value for the --window and --tab flags, so if we get
     // this value then replace it with None.
     if args.cmd_url {
-        match args.flag_window {
-            Some(v) => {
-                if v == 0 {
-                    args.flag_window = None;
-                };
-            }
-            None => {}
+        if let Some(v) = args.flag_window {
+            if v == 0 {
+                args.flag_window = None;
+            };
         };
-        match args.flag_tab {
-            Some(v) => {
-                if v == 0 {
-                    args.flag_tab = None;
-                };
-            }
-            None => {}
+        if let Some(v) = args.flag_tab {
+            if v == 0 {
+                args.flag_tab = None;
+            };
         };
 
         if args.flag_tab.is_some() && args.flag_window.is_none() {

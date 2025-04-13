@@ -1,15 +1,3 @@
-#![deny(warnings)]
-
-extern crate dirs;
-extern crate docopt;
-extern crate plist;
-extern crate reqwest;
-#[macro_use]
-extern crate serde_derive;
-extern crate tera;
-extern crate urlencoding;
-extern crate urlparse;
-
 use std::io::Write;
 use std::process;
 
@@ -43,13 +31,13 @@ fn main() {
     let args = cli::parse_args(NAME);
 
     if args.flag_version {
-        println!("{}.rs v{}", NAME, VERSION);
+        println!("{NAME}.rs v{VERSION}");
     }
 
     if args.cmd_url {
         assert_safari_is_running();
         match safari::get_url(args.flag_window, args.flag_tab) {
-            Ok(url) => print!("{}", url),
+            Ok(url) => print!("{url}"),
             Err(e) => error!("{}", e),
         };
     }
@@ -57,7 +45,7 @@ fn main() {
     if args.cmd_title {
         assert_safari_is_running();
         match safari::get_title(args.flag_window, args.flag_tab) {
-            Ok(url) => print!("{}", url),
+            Ok(url) => print!("{url}"),
             Err(e) => error!("{}", e),
         };
     }
@@ -69,21 +57,20 @@ fn main() {
     if args.cmd_list_tabs {
         assert_safari_is_running();
         for url in safari::get_all_urls() {
-            println!("{}", url);
+            println!("{url}");
         }
     }
 
     if args.cmd_close_tabs {
         assert_safari_is_running();
-        let patterns = args.arg_urls_to_close.split(",").collect();
-        safari::close_tabs(patterns);
+        safari::close_tabs(&args.arg_urls_to_close.split(',').collect::<Vec<&str>>());
     }
 
     if args.cmd_reading_list {
         match safari::get_reading_list_urls() {
             Ok(urls) => {
                 for url in urls {
-                    println!("{}", url);
+                    println!("{url}");
                 }
             }
             Err(e) => error!("{}", e),
@@ -95,7 +82,7 @@ fn main() {
             match safari::list_icloud_tabs_devices() {
                 Ok(devices) => {
                     for device in devices {
-                        println!("{}", device);
+                        println!("{device}");
                     }
                 }
                 Err(e) => error!("{}", e),
@@ -106,18 +93,15 @@ fn main() {
                 Err(e) => error!("{}", e),
             };
             match args.flag_device {
-                Some(d) => match tab_data.get(&d) {
-                    Some(urls) => {
-                        for url in urls {
-                            println!("{}", url);
-                        }
+                Some(d) => if let Some(urls) = tab_data.get(&d) {
+                    for url in urls {
+                        println!("{url}");
                     }
-                    None => (),
                 },
                 None => {
                     for urls in tab_data.values() {
                         for url in urls {
-                            println!("{}", url);
+                            println!("{url}");
                         }
                     }
                 }

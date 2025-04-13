@@ -1,12 +1,12 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{HashMap};
 use std::fs::File;
 use std::process;
 
-use plist::Plist;
+use plist::{Value, Dictionary};
 use tera::{Context, Tera};
 
-use applescript::run as run_applescript;
-use urls;
+use crate::applescript::run as run_applescript;
+use crate::urls;
 
 macro_rules! error(
   ($($arg:tt)*) => { { return Err(format!($($arg)*)) } }
@@ -73,36 +73,30 @@ fn get_property(window: Option<u32>, tab: Option<u32>, property: &str) -> Result
     let command = match window {
         Some(w_idx) => match tab {
             Some(t_idx) => format!(
-                "tell application \"Safari\" to get {} of tab {} of window {}",
-                property, t_idx, w_idx
+                "tell application \"Safari\" to get {property} of tab {t_idx} of window {w_idx}"
             ),
             None => format!(
-                "tell application \"Safari\" to get {} of document {}",
-                property, w_idx
+                "tell application \"Safari\" to get {property} of document {w_idx}"
             ),
         },
         None => format!(
-            "tell application \"Safari\" to get {} of document 1",
-            property
+            "tell application \"Safari\" to get {property} of document 1"
         ),
     };
     let output = run_applescript(&command);
 
     if output.status.success() {
         Ok(output.stdout.trim().to_owned())
+    } else if output.stderr.contains("Invalid index") {
+        error!("Invalid index: no such window or tab.")
     } else {
-        if output.stderr.contains("Invalid index") {
-            error!("Invalid index: no such window or tab.")
-        } else {
-            error!("Unexpected error from osascript: {:?}", output.stderr)
-        }
+        error!("Unexpected error from osascript: {:?}", output.stderr)
     }
 }
 
-/// Tests for get_property().
 #[cfg(test)]
 mod tests_property {
-    use safari::get_property;
+    use crate::safari::get_property;
 
     #[test]
     fn test_invalid_property_is_rejected() {
@@ -122,10 +116,7 @@ pub fn get_all_urls() -> Vec<String> {
     let mut urls = vec![];
     for window in windows {
         for tab in 1..window.tab_count {
-            match get_url(Some(window.window_index), Some(tab)) {
-                Ok(u) => urls.push(u),
-                Err(_) => {}
-            }
+            if let Ok(u) = get_url(Some(window.window_index), Some(tab)) { urls.push(u) }
         }
     }
     urls
@@ -141,16 +132,16 @@ pub fn get_all_urls() -> Vec<String> {
 ///     ^http://examples.com    matches at the start of the URL
 ///     example.com/$           matches at the end of the URL
 ///
-fn parse_conditions(url_patterns: Vec<&str>) -> Vec<String> {
+fn parse_conditions(url_patterns: &[&str]) -> Vec<String> {
     url_patterns
         .iter()
         .map(|p| {
-            if p.starts_with("^") {
-                format!("starts with \"{}\"", p.replace("^", ""))
-            } else if p.ends_with("$") {
-                format!("ends with \"{}\"", p.replace("$", ""))
+            if p.starts_with('^') {
+                format!("starts with \"{}\"", p.replace('^', ""))
+            } else if p.ends_with('$') {
+                format!("ends with \"{}\"", p.replace('$', ""))
             } else {
-                format!("contains \"{}\"", p)
+                format!("contains \"{p}\"")
             }
         })
         .collect()
@@ -159,7 +150,7 @@ fn parse_conditions(url_patterns: Vec<&str>) -> Vec<String> {
 /// Tests for parse_conditions().
 #[cfg(test)]
 mod tests {
-    use safari::parse_conditions;
+    use crate::safari::parse_conditions;
 
     #[test]
     fn test_parse_conditions() {
@@ -169,7 +160,7 @@ mod tests {
             "starts with \"facebook.com\"",
             "ends with \"twitter.com\"",
         ];
-        let actual = parse_conditions(patterns);
+        let actual = parse_conditions(&patterns);
         assert_eq!(actual, expected);
     }
 }
@@ -181,13 +172,13 @@ mod tests {
 /// have a go.  In general it will fail to close tabs, rather than close
 /// the wrong tabs.
 ///
-pub fn close_tabs(url_patterns: Vec<&str>) {
+pub fn close_tabs(url_patterns: &[&str]) {
     let conditions = parse_conditions(url_patterns);
 
     let clean_tabs_template = include_str!("scripts/clean-tabs.scpt");
     let mut context = Context::new();
-    context.add("conditions", &conditions);
-    let script = Tera::one_off(&clean_tabs_template, &context, false).unwrap();
+    context.insert("conditions", &conditions);
+    let script = Tera::one_off(clean_tabs_template, &context, false).unwrap();
 
     // Run it twice to get around weird AppleScript bugs.
     run_applescript(&script);
@@ -195,13 +186,11 @@ pub fn close_tabs(url_patterns: Vec<&str>) {
 }
 
 /// Get the Bookmarks.plist dict for a given title
-fn read_bookmarks_plist(title: &str) -> Result<Plist, String> {
+fn read_bookmarks_plist(title: &str) -> Result<Value, String> {
     // All Safari data lives at ~/Library/Safari/Bookmarks.plist
     // TODO: There's probably a more idiomatic Rust-like way to write this.
-    let mut plist_path = match dirs::home_dir() {
-        Some(v) => v,
-        None => error!("Unable to get home directory?"),
-    };
+    let Some(mut plist_path) = dirs::home_dir() else { error!("Unable to get home directory?") };
+
     plist_path.push("Library/Safari/Bookmarks.plist");
 
     let file = match File::open(plist_path) {
@@ -209,15 +198,12 @@ fn read_bookmarks_plist(title: &str) -> Result<Plist, String> {
         Err(e) => error!("Unable to open ~/Library/Safari/Bookmarks.plist: {:?}", e),
     };
 
-    let plist = match Plist::read(file) {
+    let plist = match Value::from_reader(file) {
         Ok(v) => v,
         Err(e) => error!("Unable to read ~/Library/Safari/Bookmarks.plist: {:?}", e),
     };
 
-    let data = match plist.as_dictionary() {
-        Some(v) => v,
-        None => error!("Unable to parse ~/Library/Safari/Bookmarks.plist as dictionary?"),
-    };
+    let Some(data) = plist.as_dictionary() else { error!("Unable to parse ~/Library/Safari/Bookmarks.plist as dictionary?") };
 
     // The structure of Bookmarks.plist is as follows:
     //
@@ -258,15 +244,9 @@ fn read_bookmarks_plist(title: &str) -> Result<Plist, String> {
     });
 
     // Check we got one, and only one result.
-    let result = match matching_children.next() {
-        Some(v) => v,
-        None => error!("Unable to find key {} in Bookmarks.plist", title),
-    };
+    let Some(result) = matching_children.next() else { error!("Unable to find key {} in Bookmarks.plist", title) };
 
-    match matching_children.next() {
-        Some(_) => error!("Got more than one result for {} in Bookmarks.plist", title),
-        None => {}
-    };
+    if matching_children.next().is_some() { error!("Got more than one result for {} in Bookmarks.plist", title) };
 
     Ok(result.to_owned())
 }
@@ -277,10 +257,7 @@ fn read_bookmarks_plist(title: &str) -> Result<Plist, String> {
 /// Bookmarks.plist, which is usually (but not guaranteed to be) newest first.
 ///
 pub fn get_reading_list_urls() -> Result<Vec<String>, String> {
-    let plist = match read_bookmarks_plist("com.apple.ReadingList") {
-        Ok(v) => v,
-        Err(e) => return Err(e),
-    };
+    let plist = read_bookmarks_plist("com.apple.ReadingList")?;
 
     // TODO: All these unwrap() calls should probably be handled better
     let children = plist
@@ -302,18 +279,15 @@ pub fn get_reading_list_urls() -> Result<Vec<String>, String> {
                 .as_string()
                 .unwrap()
         })
-        .map(|url| urls::tidy_url(url))
+        .map(urls::tidy_url)
         .collect())
 }
 
 /// Get the com.apple.Safari.plist preferences file
-fn read_safari_plist() -> Result<BTreeMap<String, Plist>, String> {
+fn read_safari_plist() -> Result<Dictionary, String> {
     // All Safari data lives at ~/Library/Safari/Bookmarks.plist
     // TODO: There's probably a more idiomatic Rust-like way to write this.
-    let mut plist_path = match dirs::home_dir() {
-        Some(v) => v,
-        None => error!("Unable to get home directory?"),
-    };
+    let Some(mut plist_path) = dirs::home_dir() else { error!("Unable to get home directory?") };
     plist_path.push("Library/SyncedPreferences/com.apple.Safari.plist");
 
     let file = match File::open(plist_path) {
@@ -321,15 +295,12 @@ fn read_safari_plist() -> Result<BTreeMap<String, Plist>, String> {
         Err(e) => error!("Unable to open com.apple.Safari.plist: {:?}", e),
     };
 
-    let plist = match Plist::read(file) {
+    let plist = match Value::from_reader(file) {
         Ok(v) => v,
         Err(e) => error!("Unable to read com.apple.Safari.plist: {:?}", e),
     };
 
-    let data = match plist.as_dictionary() {
-        Some(v) => v,
-        None => error!("Unable to parse com.apple.Safari.plist as dictionary?"),
-    };
+    let Some(data) = plist.as_dictionary() else { error!("Unable to parse com.apple.Safari.plist as dictionary?") };
 
     // The structure of com.apple.Safari.plist is as follows:
     //
@@ -370,10 +341,7 @@ fn read_safari_plist() -> Result<BTreeMap<String, Plist>, String> {
 
 /// Return a list of devices in iCloud Tabs.
 pub fn list_icloud_tabs_devices() -> Result<Vec<String>, String> {
-    let plist = match read_safari_plist() {
-        Ok(plist) => plist,
-        Err(e) => return Err(e),
-    };
+    let plist = read_safari_plist()?;
 
     Ok(plist
         .values()
@@ -396,10 +364,7 @@ pub fn list_icloud_tabs_devices() -> Result<Vec<String>, String> {
 
 /// Return a list of URLs from iCloud Tabs.
 pub fn get_icloud_tabs_urls() -> Result<HashMap<String, Vec<String>>, String> {
-    let plist = match read_safari_plist() {
-        Ok(plist) => plist,
-        Err(e) => return Err(e),
-    };
+    let plist = read_safari_plist()?;
 
     // Within the `values` dictionary, each device is as follows:
     //
@@ -455,7 +420,7 @@ pub fn get_icloud_tabs_urls() -> Result<HashMap<String, Vec<String>>, String> {
                     .as_string()
                     .unwrap()
             })
-            .map(|url| urls::tidy_url(url))
+            .map(urls::tidy_url)
             .collect();
         result.insert(name, urls);
     }
@@ -478,10 +443,9 @@ fn get_window_tab_count_pairs() -> Vec<SafariWindow> {
     let mut pairs = vec![];
     let r = run_applescript("tell application \"Safari\" to get count of windows");
     let window_count = r.stdout.trim().parse::<u32>().unwrap();
-    for window in 1..(window_count + 1) {
+    for window in 1..=window_count {
         let r = run_applescript(&format!(
-            "tell application \"Safari\" to get count of tabs of window {}",
-            window
+            "tell application \"Safari\" to get count of tabs of window {window}"
         ));
         if r.status.success() {
             pairs.push(SafariWindow {

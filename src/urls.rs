@@ -1,4 +1,4 @@
-use reqwest::Client;
+use reqwest::blocking::Client;
 
 use urlencoding::encode as urlencode;
 use urlparse::{parse_qs, urlparse, urlunparse, Query, Url};
@@ -29,18 +29,19 @@ fn partial_urlencode(value: &str) -> String {
 fn encode_querystring(query: Query) -> Option<String> {
     let mut query_components: Vec<String> = vec![];
     for (key, value) in query {
-        for v in value.iter() {
+        for v in &value {
             query_components.push(format!("{}={}", key, partial_urlencode(v)));
         }
     }
-    if query_components.len() > 0 {
-        Some(query_components.join("&"))
-    } else {
+    if query_components.is_empty() {
         None
+    } else {
+        Some(query_components.join("&"))
     }
 }
 
 /// Strip tracking junk and URL suffixes.
+#[allow(clippy::too_many_lines)]
 pub fn tidy_url(url: &str) -> String {
     let mut parsed_url = urlparse(url);
 
@@ -58,11 +59,12 @@ pub fn tidy_url(url: &str) -> String {
     // ridiculous length
     if (parsed_url.netloc == "www.amazon.co.uk") || (parsed_url.netloc == "smile.amazon.co.uk") {
         parsed_url.query = None;
-        let mut new_path = String::from("");
-        for component in parsed_url.path.split("ref=") {
+        let mut new_path = String::new();
+
+        parsed_url.path.split("ref=").for_each(|component| {
             new_path = String::from(component);
-            break;
-        }
+        });
+
         parsed_url.path = new_path;
     }
 
@@ -85,16 +87,7 @@ pub fn tidy_url(url: &str) -> String {
         remove_query_param(&mut parsed_url, "_branch_match_id");
         remove_query_param(&mut parsed_url, "source");
 
-        parsed_url.fragment = match parsed_url.fragment {
-            Some(fragment) => {
-                if fragment == "notes" {
-                    None
-                } else {
-                    Some(fragment)
-                }
-            }
-            None => None,
-        };
+        parsed_url.fragment = parsed_url.fragment.filter(|fragment| fragment != "notes");
     }
 
     // Remove &feature=youtu.be from YouTube URLs
@@ -116,8 +109,7 @@ pub fn tidy_url(url: &str) -> String {
                 .keys()
                 .filter(|key| {
                     key.starts_with("utm_") || key.starts_with("__cf") || key.starts_with("hsa")
-                })
-                .map(|k| k.clone())
+                }).cloned()
                 .collect();
             for key in ignore_keys {
                 query.remove(&key);
@@ -130,16 +122,7 @@ pub fn tidy_url(url: &str) -> String {
     // Tidy up the query and anchor links in modules on docs.python.org
     if parsed_url.netloc == "docs.python.org" {
         // If this is a module page, scrap any module- fragment.
-        parsed_url.fragment = match parsed_url.fragment {
-            Some(fragment) => {
-                if fragment.starts_with("module-") {
-                    None
-                } else {
-                    Some(fragment)
-                }
-            }
-            None => None,
-        };
+        parsed_url.fragment = parsed_url.fragment.filter(|fragment| !fragment.starts_with("module-"));
 
         // Scrap the highlight
         remove_query_param(&mut parsed_url, "highlight");
@@ -147,10 +130,8 @@ pub fn tidy_url(url: &str) -> String {
 
     // If I'm on a GitHub pull request and looking at the files tab,
     // link to the top of the pull request.
-    if parsed_url.netloc == "github.com" {
-        if parsed_url.path.ends_with("/files") {
-            parsed_url.path = parsed_url.path.replace("/files", "");
-        }
+    if parsed_url.netloc == "github.com" && parsed_url.path.ends_with("/files") {
+        parsed_url.path = parsed_url.path.replace("/files", "");
     }
 
     // Remove tracking query parameters from telegraph.co.uk URLs
@@ -178,8 +159,7 @@ pub fn tidy_url(url: &str) -> String {
                         key.starts_with("ga_")
                             || key.starts_with("ref")
                             || key.starts_with("organic_search_click")
-                    })
-                    .map(|k| k.clone())
+                    }).cloned()
                     .collect();
                 for key in utm_keys {
                     query.remove(&key);
@@ -323,7 +303,7 @@ pub fn tidy_url(url: &str) -> String {
 fn remove_query_param(parsed_url: &mut Url, query_param: &str) {
     parsed_url.query = match parsed_url.query {
         Some(ref qs) => {
-            let mut query = parse_qs(&qs);
+            let mut query = parse_qs(qs);
             query.remove(query_param);
             encode_querystring(query)
         }
@@ -351,20 +331,20 @@ fn fix_se_referral(parsed_url: &mut Url, hostname: &str, user_id: &str) {
     }
 
     // Take a copy of the original path to get around ownership rules
-    let original_path = parsed_url.path.to_owned();
+    let original_path = parsed_url.path.clone();
 
-    let new_path = match original_path.split("/").nth(2) {
+    let new_path = match original_path.split('/').nth(2) {
         Some(path_component) => {
             // Check it's a number
             match path_component.parse::<i32>() {
                 Ok(q_id) => {
                     // Check if there's an answer fragment
-                    match parsed_url.fragment.to_owned() {
+                    match parsed_url.fragment.clone() {
                         Some(fragment) => match fragment.parse::<i32>() {
-                            Ok(ans_id) => Some(format!("/a/{}/{}", ans_id, user_id)),
+                            Ok(ans_id) => Some(format!("/a/{ans_id}/{user_id}")),
                             Err(_) => None,
                         },
-                        None => Some(format!("/q/{}/{}", q_id, user_id)),
+                        None => Some(format!("/q/{q_id}/{user_id}")),
                     }
                 }
                 Err(_) => None,
@@ -374,12 +354,9 @@ fn fix_se_referral(parsed_url: &mut Url, hostname: &str, user_id: &str) {
     };
 
     // If we got something interesting, update the URL.
-    match new_path {
-        Some(p) => {
-            parsed_url.path = p;
-            parsed_url.fragment = None;
-        }
-        None => (),
+    if let Some(p) = new_path {
+        parsed_url.path = p;
+        parsed_url.fragment = None;
     };
 }
 
